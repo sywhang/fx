@@ -12,3 +12,5 @@ require (
 	golang.org/x/sys v0.0.0-20210220050731-9a76102bfb43
 	golang.org/x/tools v0.0.0-20191114200427-caa0b0f7d508 // indirect
 )
+
+replace go.uber.org/dig => go.uber.org/dig v1.10.1-0.20210525221458-d3dbd1dfca53
