@@ -89,3 +89,23 @@ func (a Annotated) String() string {
 	}
 	return fmt.Sprintf("fx.Annotated{%v}", strings.Join(fields, ", "))
 }
+
+type Annotation interface {
+	name() string
+	group() string
+	optional() bool
+
+	apply(*Annotated)
+}
+
+func (*Annotation) apply(a *Annotated) {
+}
+
+func Annotate(fn interface{}, anns ...Annotation) interface{} {
+	a := Annotated {
+		Target: fn,
+	}
+	for _, ann := range anns {
+		ann.apply(&a)
+	}
+}
