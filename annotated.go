@@ -91,21 +91,111 @@ func (a Annotated) String() string {
 }
 
 type Annotation interface {
-	name() string
-	group() string
-	optional() bool
-
-	apply(*Annotated)
+	apply(ctor interface{})
 }
 
-func (*Annotation) apply(a *Annotated) {
+type paramTag struct {
+	tags []string
+}
+
+type resultTag struct {
+	tags []string
+}
+
+func (p *paramTag) apply(fn interface{}) (interface{}, error) {
+	// Verify all tags can be applied to the inputs
+	fnVal := reflect.ValueOf(fn)
+	fnType := fnVal.Type()
+	numIn := fnType.NumIn()
+	numOut := fnType.NumOut()
+	if numIn < len(p.tags) {
+		// Error out
+		return nil, errors.New("cannot apply function because this is sad")
+	}
+	digInStructFields := []reflect.StructField{{
+		Name:      "In",
+		Anonymous: true,
+		Type:      reflect.TypeOf(In{}),
+	}}
+	for i := 0; i < numIn(); i++ {
+		name := fmt.Sprintf("Field%d", i)
+		field := reflect.StructField{
+			Name: name,
+			Type: fnType.In(i)
+			Tag: reflect.StructTag(p.tags[i])
+		}
+		digInStructFields = append(digInStructFields, field)
+	}
+	outs := make([]reflect.Type, numOut)
+	for i := 0; i < numOut; i++ {
+		outs[i] = fnType.Out(i)
+	}
+	inStructType := reflect.StructOf(digInStructFields)
+	newFuncType := reflect.FuncOf([]reflect.Type{inStructType}, outs, false)
+	newF := reflect.MakeFunc(newFuncType, func(args []reflect.Value) []reflect.Value {
+		fnArgs := make([]reflect.Value, numIns)
+		params := args[0]
+		for i := 0; i < numIns; i++ {
+			fnArgs[i] = params.Field(i+1)
+		}
+		return fnVal.Call(fnArgs)
+	})
+	return newF, nil
+}
+
+func ParamTags(tags ...string) Annotation {
+	t := paramTag{}
+	t.tags := make([]string, len(tags))
+	// TODO: validation?
+	for i, tag := range tags {
+		t.tags[i] = tag
+	}
+	return t
+}
+
+func ResultTags(tags ...string) Annotation {
+	t := resultTag{}
+	t.tags := make([]string, len(tags))
+	// TODO: validation?
+	for i, tag := range tags {
+		t.tags[i] = tag
+	}
+	return t
+}
+
+struct annotatedFunc type {
+	target interface{}
+	paramTag Annotation
+	resultTag Annotation
 }
 
 func Annotate(fn interface{}, anns ...Annotation) interface{} {
-	a := Annotated {
-		Target: fn,
-	}
 	for _, ann := range anns {
-		ann.apply(&a)
+		fn = ann.apply(fn)
 	}
+	digInStructFields := []reflect.StructField{{
+	Name:      "In",
+	Anonymous: true,
+	Type:      reflect.TypeOf(In{}),
+		}}
+		for i := 0; i < numArgs; i++ {
+			name := fmt.Sprintf("Field%d", i)
+			field := reflect.StructField{
+				Name: name,
+				Type: userFuncType.In(i),
+			}
+			if i < numNames { // namedArguments
+				tag := ""
+				annos[i].isAnnotation()
+				switch anno := annos[i].(type) {
+				case groupAnnotation:
+					tag = fmt.Sprintf(`group:"%s"`, anno.group)
+				case nameAnnotation:
+					tag = fmt.Sprintf(`name:"%s"`, anno.name)
+				}
+
+				field.Tag = reflect.StructTag(tag)
+			}
+			digInStructFields = append(digInStructFields, field)
+		}
 }
