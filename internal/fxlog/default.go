@@ -18,11 +18,15 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-package fx
+package fxlog
 
-import "go.uber.org/fx/fxevent"
+import (
+	"io"
 
-// WithLogger exposes logger option for tests.
-func WithLogger(l fxevent.Logger) Option {
-	return withLogger(l)
+	"go.uber.org/fx/fxevent"
+)
+
+// DefaultLogger constructs a Logger out of io.Writer.
+func DefaultLogger(w io.Writer) fxevent.Logger {
+	return &fxevent.ConsoleLogger{W: w}
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Uber Technologies, Inc.
+// Copyright (c) 2020-2021 Uber Technologies, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +26,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"log"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,13 +39,20 @@ import (
 	"go.uber.org/fx/fxevent"
 	"go.uber.org/fx/fxtest"
 	"go.uber.org/fx/internal/fxlog"
-	"go.uber.org/fx/internal/fxreflect"
+	"go.uber.org/goleak"
 	"go.uber.org/multierr"
+	"go.uber.org/zap"
 )
 
-func NewForTest(t testing.TB, opts ...Option) *App {
-	testOpts := []Option{Logger(fxtest.NewTestPrinter(t))}
+func NewForTest(tb testing.TB, opts ...Option) *App {
+	testOpts := []Option{
+		// Provide both, Logger and WithLogger so that if the test
+		// WithLogger fails, we don't pollute stderr.
+		Logger(fxtest.NewTestPrinter(tb)),
+		WithLogger(func() fxevent.Logger { return fxtest.NewTestLogger(tb) }),
+	}
 	opts = append(testOpts, opts...)
+
 	return New(opts...)
 }
 
@@ -65,12 +76,14 @@ func TestNewApp(t *testing.T) {
 		// (e.g., logging) from changing halfway through our provides.
 
 		spy := new(fxlog.Spy)
-		app := fxtest.New(t, Provide(func() struct{} { return struct{}{} }), WithLogger(spy))
+		app := fxtest.New(t, Provide(func() struct{} { return struct{}{} }),
+			WithLogger(func() fxevent.Logger { return spy }))
 		defer app.RequireStart().RequireStop()
 		require.Equal(t,
-			[]string{"Provide", "Provide", "Provide", "Provide", "Running"},
+			[]string{"Provide", "Provide", "Provide", "Provide", "CustomLogger", "Running"},
 			spy.EventTypes())
-		assert.Contains(t, fxreflect.ReturnTypes(spy.Events()[0].(*fxevent.Provide).Constructor), "struct {}")
+
+		assert.Contains(t, spy.Events()[0].(*fxevent.Provide).OutputTypeNames, "struct {}")
 	})
 
 	t.Run("CircularGraphReturnsError", func(t *testing.T) {
@@ -258,6 +271,143 @@ func TestNewApp(t *testing.T) {
 	})
 }
 
+func TestWithLogger(t *testing.T) {
+	t.Parallel()
+
+	t.Run("initializing custom logger", func(t *testing.T) {
+		t.Parallel()
+
+		var spy fxlog.Spy
+		app := fxtest.New(t,
+			Supply(&spy),
+			WithLogger(func(spy *fxlog.Spy) fxevent.Logger {
+				return spy
+			}),
+		)
+
+		assert.Equal(t, []string{
+			"Supply", "Provide", "Provide", "Provide", "CustomLogger",
+		}, spy.EventTypes())
+
+		spy.Reset()
+		app.RequireStart().RequireStop()
+
+		require.NoError(t, app.Err())
+
+		assert.Equal(t, []string{"Running"}, spy.EventTypes())
+	})
+
+	t.Run("error in WithLogger provider, use default", func(t *testing.T) {
+		// This test cannot be run in paralllel with the others because
+		// it hijacks stderr.
+
+		// Temporarily hijack stderr and restore it after this test so
+		// that we can assert its contents.
+		f, err := ioutil.TempFile(t.TempDir(), "stderr")
+		if err != nil {
+			t.Fatalf("could not open a file for writing")
+		}
+		defer func(oldStderr *os.File) {
+			assert.NoError(t, f.Close())
+			os.Stderr = oldStderr
+		}(os.Stderr)
+		os.Stderr = f
+
+		app := New(
+			Supply(zap.NewNop()),
+			WithLogger(&bytes.Buffer{}),
+		)
+		err = app.Err()
+		require.Error(t, err)
+		assert.Contains(t,
+			err.Error(),
+			"must provide constructor function, got  (type *bytes.Buffer)",
+		)
+
+		stderr, err := ioutil.ReadFile(f.Name())
+		require.NoError(t, err)
+
+		// Example output:
+		// [Fx] SUPPLY  *zap.Logger
+		// [Fx] ERROR   Failed to construct custom logger: fx.WithLogger() from:
+		// go.uber.org/fx_test.TestSetupLogger.func3
+		//        /Users/abg/dev/fx/app_test.go:334
+		// testing.tRunner
+		//        /usr/local/Cellar/go/1.16.4/libexec/src/testing/testing.go:1193
+		// Failed: must provide constructor function, got  (type *bytes.Buffer)
+
+		out := string(stderr)
+		assert.Contains(t, out, "[Fx] SUPPLY\t*zap.Logger\n")
+		assert.Contains(t, out, "[Fx] ERROR\t\tFailed to construct custom logger: fx.WithLogger")
+		assert.Contains(t, out, "must provide constructor function, got  (type *bytes.Buffer)\n")
+	})
+
+	t.Run("error in Provide shows logs", func(t *testing.T) {
+		t.Parallel()
+
+		var spy fxlog.Spy
+		app := New(
+			Supply(&spy),
+			WithLogger(func(spy *fxlog.Spy) fxevent.Logger {
+				return spy
+			}),
+			Provide(&bytes.Buffer{}), // not passing in a constructor.
+		)
+
+		err := app.Err()
+		require.Error(t, err)
+		assert.Contains(t,
+			err.Error(),
+			"must provide constructor function, got  (type *bytes.Buffer)",
+		)
+
+		assert.Equal(t, []string{"Supply", "ProvideError", "CustomLogger"}, spy.EventTypes())
+	})
+
+	t.Run("logger failed to build", func(t *testing.T) {
+		t.Parallel()
+
+		var buff bytes.Buffer
+		app := New(
+			Logger(log.New(&buff, "", 0)),
+			WithLogger(func() (fxevent.Logger, error) {
+				return nil, errors.New("great sadness")
+			}),
+		)
+
+		err := app.Err()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "great sadness")
+
+		out := buff.String()
+		assert.Contains(t, out, "[Fx] ERROR\t\tFailed to construct custom logger")
+	})
+
+	t.Run("logger dependency failed to build", func(t *testing.T) {
+		t.Parallel()
+
+		var buff bytes.Buffer
+		app := New(
+			Logger(log.New(&buff, "", 0)),
+			Provide(func() (*zap.Logger, error) {
+				return nil, errors.New("great sadness")
+			}),
+			WithLogger(func(log *zap.Logger) fxevent.Logger {
+				t.Errorf("WithLogger must not be called")
+				panic("must not be called")
+			}),
+		)
+
+		err := app.Err()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "great sadness")
+
+		out := buff.String()
+		assert.Contains(t, out, "[Fx] PROVIDE\t*zap.Logger")
+		assert.Contains(t, out, "[Fx] ERROR\t\tFailed to construct custom logger")
+	})
+}
+
 type errHandlerFunc func(error)
 
 func (f errHandlerFunc) HandleError(err error) { f(err) }
@@ -424,10 +574,10 @@ func TestOptions(t *testing.T) {
 		spy := new(fxlog.Spy)
 		New(
 			Provide(&bytes.Buffer{}), // error, not a constructor
-			WithLogger(spy),
+			WithLogger(func() fxevent.Logger { return spy }),
 		)
-		require.Equal(t, []string{"Provide", "ProvideError"}, spy.EventTypes())
-		assert.Contains(t, spy.Events()[1].(*fxevent.ProvideError).Err.Error(), "must provide constructor function")
+		require.Equal(t, []string{"ProvideError", "CustomLogger"}, spy.EventTypes())
+		assert.Contains(t, spy.Events()[0].(*fxevent.ProvideError).Err.Error(), "must provide constructor function")
 	})
 }
 
@@ -476,8 +626,9 @@ func TestAppStart(t *testing.T) {
 		blocker := func(lc Lifecycle) *A {
 			lc.Append(
 				Hook{
-					OnStart: func(context.Context) error {
-						select {}
+					OnStart: func(ctx context.Context) error {
+						<-ctx.Done()
+						return ctx.Err()
 					},
 				},
 			)
@@ -490,11 +641,101 @@ func TestAppStart(t *testing.T) {
 		)
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+
+		err := app.Start(ctx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "OnStart hook added by go.uber.org/fx_test.TestAppStart.func1.1 failed: context deadline exceeded")
+		cancel()
+	})
+
+	t.Run("TimeoutWithFinishedHooks", func(t *testing.T) {
+		type A struct{}
+		type B struct{ A *A }
+		type C struct{ B *B }
+		newA := func(lc Lifecycle) *A {
+			lc.Append(
+				Hook{
+					OnStart: func(context.Context) error {
+						return nil
+					},
+				},
+			)
+			return &A{}
+		}
+		newB := func(lc Lifecycle, a *A) *B {
+			lc.Append(
+				Hook{
+					OnStart: func(context.Context) error {
+						time.Sleep(10 * time.Millisecond)
+						return nil
+					},
+				},
+			)
+			return &B{a}
+		}
+		newC := func(lc Lifecycle, b *B) *C {
+			lc.Append(
+				Hook{
+					OnStart: func(ctx context.Context) error {
+						<-ctx.Done()
+						return ctx.Err()
+					},
+				},
+			)
+			return &C{b}
+		}
+		app := fxtest.New(
+			t,
+			Provide(newA, newB, newC),
+			Invoke(func(*C) {}),
+		)
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 
 		err := app.Start(ctx)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "context deadline exceeded")
+		assert.Contains(t, err.Error(), "OnStart hook added by go.uber.org/fx_test.TestAppStart.func2.3 failed: context deadline exceeded")
+
+		// Check that hooks successfully run contain file/line numbers
+		assert.Regexp(t, "app_test.go:\\d+", err.Error())
+
+		// Check that hooks successfully run are reported in order of runtime.
+		hook1Idx := strings.Index(err.Error(), "go.uber.org/fx_test.TestAppStart.func2.1.1()")
+		hook2Idx := strings.Index(err.Error(), "go.uber.org/fx_test.TestAppStart.func2.2.1()")
+		assert.Greater(t, hook1Idx, hook2Idx)
+	})
+
+	t.Run("CtxCancelledDuringStart", func(t *testing.T) {
+		type A struct{}
+		running := make(chan struct{})
+		newA := func(lc Lifecycle) *A {
+			lc.Append(
+				Hook{
+					OnStart: func(ctx context.Context) error {
+						close(running)
+						<-ctx.Done()
+						return ctx.Err()
+					},
+				},
+			)
+			return &A{}
+		}
+		app := fxtest.New(
+			t,
+			Provide(newA),
+			Invoke(func(*A) {}),
+		)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			<-running
+			cancel()
+		}()
+		err := app.Start(ctx)
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "context deadline exceeded")
+		assert.NotContains(t, err.Error(), "timed out while executing hook OnStart")
 	})
 
 	t.Run("Rollback", func(t *testing.T) {
@@ -539,7 +780,7 @@ func TestAppStart(t *testing.T) {
 	t.Run("InvokeNonFunction", func(t *testing.T) {
 		spy := new(fxlog.Spy)
 
-		app := New(WithLogger(spy), Invoke(struct{}{}))
+		app := New(WithLogger(func() fxevent.Logger { return spy }), Invoke(struct{}{}))
 		err := app.Err()
 		require.Error(t, err, "expected start failure")
 		assert.Contains(t, err.Error(), "can't invoke non-function")
@@ -552,7 +793,7 @@ func TestAppStart(t *testing.T) {
 		//         /.../go/1.13.3/libexec/src/testing/testing.go:909
 		// Failed: can't invoke non-function {} (type struct {})
 		require.Equal(t,
-			[]string{"Provide", "Provide", "Provide", "Invoke", "InvokeError"},
+			[]string{"Provide", "Provide", "Provide", "CustomLogger", "Invoke", "InvokeError"},
 			spy.EventTypes())
 		failedEvent := spy.Events()[len(spy.EventTypes())-1].(*fxevent.InvokeError)
 		assert.Contains(t, failedEvent.Err.Error(), "can't invoke non-function")
@@ -656,7 +897,10 @@ func TestAppStart(t *testing.T) {
 
 func TestAppStop(t *testing.T) {
 	t.Run("Timeout", func(t *testing.T) {
-		block := func(context.Context) error { select {} }
+		block := func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}
 		app := fxtest.New(t, Invoke(func(l Lifecycle) {
 			l.Append(Hook{OnStop: block})
 		}))
@@ -689,9 +933,16 @@ func TestAppStop(t *testing.T) {
 }
 
 func TestValidateApp(t *testing.T) {
+	// helper to use the test logger
+	validateApp := func(t *testing.T, opts ...Option) error {
+		return ValidateApp(
+			append(opts, Logger(fxtest.NewTestPrinter(t)))...,
+		)
+	}
+
 	t.Run("do not run provides on graph validation", func(t *testing.T) {
 		type type1 struct{}
-		err := ValidateApp(
+		err := validateApp(t,
 			Provide(func() *type1 {
 				t.Error("provide must not be called")
 				return nil
@@ -702,7 +953,7 @@ func TestValidateApp(t *testing.T) {
 	})
 	t.Run("do not run provides nor invokes on graph validation", func(t *testing.T) {
 		type type1 struct{}
-		err := ValidateApp(
+		err := validateApp(t,
 			Provide(func() *type1 {
 				t.Error("provide must not be called")
 				return nil
@@ -715,7 +966,7 @@ func TestValidateApp(t *testing.T) {
 	})
 	t.Run("provide depends on something not available", func(t *testing.T) {
 		type type1 struct{}
-		err := ValidateApp(
+		err := validateApp(t,
 			Provide(func(type1) int { return 0 }),
 			Invoke(func(int) error { return nil }),
 		)
@@ -728,7 +979,7 @@ func TestValidateApp(t *testing.T) {
 	t.Run("provide introduces a cycle", func(t *testing.T) {
 		type A struct{}
 		type B struct{}
-		err := ValidateApp(
+		err := validateApp(t,
 			Provide(func(A) B { return B{} }),
 			Provide(func(B) A { return A{} }),
 			Invoke(func(B) {}),
@@ -739,7 +990,7 @@ func TestValidateApp(t *testing.T) {
 	})
 	t.Run("invoke a type that's not available", func(t *testing.T) {
 		type A struct{}
-		err := ValidateApp(
+		err := validateApp(t,
 			Invoke(func(A) {}),
 		)
 		require.Error(t, err, "fx.ValidateApp should return an error on missing invoke dep")
@@ -749,7 +1000,7 @@ func TestValidateApp(t *testing.T) {
 	})
 	t.Run("no error", func(t *testing.T) {
 		type A struct{}
-		err := ValidateApp(
+		err := validateApp(t,
 			Provide(func() A {
 				return A{}
 			}),
@@ -771,14 +1022,82 @@ func TestDone(t *testing.T) {
 
 func TestReplaceLogger(t *testing.T) {
 	spy := new(fxlog.Spy)
-	app := fxtest.New(t, WithLogger(spy))
+	app := fxtest.New(t, WithLogger(func() fxevent.Logger { return spy }))
 	app.RequireStart().RequireStop()
-	assert.Equal(t, []string{"Provide", "Provide", "Provide", "Running"}, spy.EventTypes())
+	assert.Equal(t, []string{"Provide", "Provide", "Provide", "CustomLogger", "Running"}, spy.EventTypes())
 }
 
 func TestNopLogger(t *testing.T) {
 	app := fxtest.New(t, NopLogger)
 	app.RequireStart().RequireStop()
+}
+
+func TestCustomLoggerWithPrinter(t *testing.T) {
+	// If we provide both, an fx.Logger and fx.WithLogger, and the logger
+	// fails, we should fall back to the fx.Logger.
+
+	var buff bytes.Buffer
+	app := New(
+		Logger(log.New(&buff, "", 0)),
+		WithLogger(func() (fxevent.Logger, error) {
+			return nil, errors.New("great sadness")
+		}),
+	)
+	err := app.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "great sadness")
+
+	out := buff.String()
+	assert.Contains(t, out, "failed to build fxevent.Logger")
+	assert.Contains(t, out, "great sadness")
+}
+
+func TestCustomLoggerWithLifecycle(t *testing.T) {
+	var started, stopped bool
+	defer func() {
+		assert.True(t, started, "never started")
+		assert.True(t, stopped, "never stopped")
+	}()
+
+	var buff bytes.Buffer
+	defer func() {
+		assert.Empty(t, buff.String(), "unexpectedly wrote to the fallback logger")
+	}()
+
+	var spy fxlog.Spy
+	app := New(
+		// We expect WithLogger to do its job. This means we shouldn't
+		// print anything to this buffer.
+		Logger(log.New(&buff, "", 0)),
+		WithLogger(func(lc Lifecycle) fxevent.Logger {
+			lc.Append(Hook{
+				OnStart: func(context.Context) error {
+					assert.False(t, started, "started twice")
+					started = true
+					return nil
+				},
+				OnStop: func(context.Context) error {
+					assert.False(t, stopped, "stopped twice")
+					stopped = true
+					return nil
+				},
+			})
+			return &spy
+		}),
+	)
+
+	require.NoError(t, app.Start(context.Background()))
+	require.NoError(t, app.Stop(context.Background()))
+
+	assert.Equal(t, []string{
+		"Provide",
+		"Provide",
+		"Provide",
+		"CustomLogger",
+		"LifecycleHookStart",
+		"Running",
+		"LifecycleHookStop",
+	}, spy.EventTypes())
 }
 
 type testErrorWithGraph struct {
@@ -831,7 +1150,6 @@ func TestErrorHook(t *testing.T) {
 	t.Run("GraphWithError", func(t *testing.T) {
 		type A struct{}
 		type B struct{}
-		type C struct{}
 
 		var errStr, graphStr string
 		h := errHandlerFunc(func(err error) {
@@ -911,13 +1229,13 @@ func TestOptionString(t *testing.T) {
 		},
 		{
 			desc: "Logger",
-			give: WithLogger(testLogger{t}),
-			want: "fx.withLogger(TestOptionString)",
+			give: WithLogger(func() fxevent.Logger { return testLogger{t} }),
+			want: "fx.WithLogger(go.uber.org/fx_test.TestOptionString.func3())",
 		},
 		{
 			desc: "NopLogger",
 			give: NopLogger,
-			want: "fx.withLogger(NopLogger)",
+			want: "fx.WithLogger(go.uber.org/fx.glob..func1())",
 		},
 		{
 			desc: "ErrorHook",
@@ -943,6 +1261,10 @@ func TestOptionString(t *testing.T) {
 			assert.Equal(t, tt.want, stringer.String())
 		})
 	}
+}
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
 }
 
 type testLogger struct{ t *testing.T }

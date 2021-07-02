@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2021 Uber Technologies, Inc.
+// Copyright (c) 2021 Uber Technologies, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,17 +20,36 @@
 
 package fx
 
-import "io"
+import (
+	"testing"
 
-type printerWriter struct{ p Printer }
+	"github.com/stretchr/testify/assert"
+	"go.uber.org/fx/fxevent"
+	"go.uber.org/fx/internal/fxlog"
+)
 
-// writerFromPrinter returns an implementation of io.Writer used to support
-// Logger option which implements Printer interface.
-func writerFromPrinter(p Printer) io.Writer {
-	return &printerWriter{p: p}
+func TestLogBufferConnect(t *testing.T) {
+	spy := new(fxlog.Spy)
+	event := &fxevent.Running{}
+	lb := &logBuffer{
+		events: []fxevent.Event{event},
+		logger: nil,
+	}
+
+	lb.Connect(spy)
+	assert.Equal(t, spy.Events(), []fxevent.Event{event})
 }
 
-func (w *printerWriter) Write(b []byte) (n int, err error) {
-	w.p.Printf(string(b))
-	return len(b), nil
+func TestLogBufferLog(t *testing.T) {
+	spy := new(fxlog.Spy)
+	event := &fxevent.Running{}
+	lb := &logBuffer{
+		events: nil,
+		logger: nil,
+	}
+
+	lb.LogEvent(event)
+
+	lb.Connect(spy)
+	assert.Equal(t, spy.Events(), []fxevent.Event{event})
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Uber Technologies, Inc.
+// Copyright (c) 2021 Uber Technologies, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -18,22 +18,14 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-package fxlog
+package allfxevents
 
 import (
-	"go.uber.org/fx/fxevent"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
+	"testing"
+
+	"golang.org/x/tools/go/analysis/analysistest"
 )
 
-// DefaultLogger constructs a Logger out of io.Writer.
-func DefaultLogger(ws zapcore.WriteSyncer) fxevent.Logger {
-	zcore := zapcore.NewCore(
-		zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
-		ws,
-		zap.NewAtomicLevel(),
-	)
-	log := zap.New(zcore)
-
-	return &fxevent.ZapLogger{Logger: log}
+func TestAnalyzer(t *testing.T) {
+	analysistest.Run(t, analysistest.TestData(), Analyzer, "./...")
 }
