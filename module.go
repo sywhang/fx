@@ -36,6 +36,7 @@ import (
 type container interface {
 	Invoke(interface{}, ...dig.InvokeOption) error
 	Provide(interface{}, ...dig.ProvideOption) error
+	Decorate(interface{}, ...dig.DecorateOption) error
 }
 
 // Module is a named group of zero or more fx.Options. A Module is a
@@ -95,13 +96,14 @@ func (o moduleOption) applyModule(mod *module) {
 }
 
 type module struct {
-	parent   *module
-	name     string
-	scope    *dig.Scope
-	provides []provide
-	invokes  []invoke
-	modules  []*module
-	app      *App
+	parent     *module
+	name       string
+	scope      *dig.Scope
+	provides   []provide
+	invokes    []invoke
+	decorators []decorator
+	modules    []*module
+	app        *App
 }
 
 // builds the Scopes using the App's Container. Note that this happens
@@ -178,4 +180,13 @@ func (m *module) executeInvoke(i invoke) (err error) {
 		})
 	}()
 	return err
+}
+
+func (m *module) decorate() (err error) {
+	for _, decorator := range m.decorators {
+		if err := runDecorator(m.scope, decorator); err != nil {
+			return err
+		}
+	}
+	return nil
 }

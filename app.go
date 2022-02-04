@@ -183,6 +183,54 @@ func (o invokeOption) String() string {
 	return fmt.Sprintf("fx.Invoke(%s)", strings.Join(items, ", "))
 }
 
+func Decorate(decorators ...interface{}) Option {
+	return decorateOption{
+		Targets: decorators,
+		Stack:   fxreflect.CallerStack(1, 0),
+	}
+}
+
+type decorateOption struct {
+	Targets []interface{}
+	Stack   fxreflect.Stack
+}
+
+func (o decorateOption) apply(app *App) {
+	app.decorators = append(app.decorators, o.getDecorators()...)
+}
+
+func (o decorateOption) applyModule(mod *module) {
+	mod.decorators = append(mod.decorators, o.getDecorators()...)
+}
+
+func (o decorateOption) getDecorators() []decorator {
+	var decorators []decorator
+	for _, target := range o.Targets {
+		decorators = append(decorators, decorator{
+			Target: target,
+			Stack:  o.Stack,
+		})
+	}
+	return decorators
+}
+
+func (o decorateOption) String() string {
+	items := make([]string, len(o.Targets))
+	for i, f := range o.Targets {
+		items[i] = fxreflect.FuncName(f)
+	}
+	return fmt.Sprintf("fx.Decorate(%s)", strings.Join(items, ", "))
+}
+
+// provide is a single decorators used in Fx.
+type decorator struct {
+	// Constructor provided to Fx. This may be an fx.Annotated.
+	Target interface{}
+
+	// Stack trace of where this provide was made.
+	Stack fxreflect.Stack
+}
+
 // Error registers any number of errors with the application to short-circuit
 // startup. If more than one error is given, the errors are combined into a
 // single error.
@@ -420,10 +468,11 @@ type App struct {
 	clock     fxclock.Clock
 	lifecycle *lifecycleWrapper
 
-	container *dig.Container
-	modules   []*module
-	provides  []provide
-	invokes   []invoke
+	container  *dig.Container
+	modules    []*module
+	provides   []provide
+	invokes    []invoke
+	decorators []decorator
 
 	// Used to setup logging within fx.
 	log            fxevent.Logger
@@ -661,6 +710,15 @@ func New(opts ...Option) *App {
 		}
 	}
 
+	// Decorate
+	for _, d := range app.decorators {
+		app.decorate(d)
+	}
+
+	for _, m := range app.modules {
+		m.decorate()
+	}
+
 	// This error might have come from the provide loop above. We've
 	// already flushed to the custom logger, so we can return.
 	if app.err != nil {
@@ -895,6 +953,16 @@ func (app *App) dotGraph() (DotGraph, error) {
 	var b bytes.Buffer
 	err := dig.Visualize(app.container, &b)
 	return DotGraph(b.String()), err
+}
+
+func (app *App) decorate(d decorator) {
+	if app.err != nil {
+		return
+	}
+
+	if err := runDecorator(app.container, d); err != nil {
+		app.err = err
+	}
 }
 
 func (app *App) provide(p provide) {
