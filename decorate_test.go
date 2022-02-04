@@ -28,7 +28,7 @@ import (
 	"go.uber.org/fx/fxtest"
 )
 
-func DecorateSuccess(t *testing.T) {
+func TestDecorateSuccess(t *testing.T) {
 	type Logger struct {
 		Name string
 	}
@@ -45,18 +45,21 @@ func DecorateSuccess(t *testing.T) {
 			fx.Decorate(func() *Logger {
 				return &Logger{Name: "testRedis"}
 			}),
+			fx.Invoke(func(l *Logger) {
+				assert.Equal(t, "testRedis", l.Name)
+			}),
 		)
 
 		app := fxtest.New(t,
 			testRedis,
 			fx.Invoke(func(l *Logger) {
-				assert.Equal(t, "testRedis", l.Name)
+				assert.Equal(t, "redis", l.Name)
 			}),
 		)
 		defer app.RequireStart().RequireStop()
 	})
 
-	t.Run("decorate something from root", func(t *testing.T) {
+	t.Run("decorate a dependency from root", func(t *testing.T) {
 		redis := fx.Module("redis",
 			fx.Decorate(func() *Logger {
 				return &Logger{Name: "redis"}
@@ -70,6 +73,27 @@ func DecorateSuccess(t *testing.T) {
 			fx.Provide(func() *Logger {
 				assert.Fail(t, "should not run this")
 				return &Logger{Name: "root"}
+			}),
+		)
+		defer app.RequireStart().RequireStop()
+	})
+
+	t.Run("use a decorator in root", func(t *testing.T) {
+		redis := fx.Module("redis",
+			fx.Invoke(func(l *Logger) {
+				assert.Equal(t, "decorated logger", l.Name)
+			}),
+		)
+		logger := fx.Module("logger",
+			fx.Provide(func() *Logger {
+				return &Logger{Name: "logger"}
+			}),
+		)
+		app := fxtest.New(t,
+			redis,
+			logger,
+			fx.Decorate(func(l *Logger) *Logger {
+				return &Logger{Name: "decorated" + l.Name}
 			}),
 		)
 		defer app.RequireStart().RequireStop()
