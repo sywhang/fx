@@ -20,7 +20,7 @@ func runDecorator(c container, d decorator, opts ...dig.DecorateOption) error {
 			return fmt.Errorf("fx.Decorate(%v) from:\n%+vFailed: %v", decorator, d.Stack, err)
 		}
 	default:
-		if err := c.Decorate(d, opts...); err != nil {
+		if err := c.Decorate(decorator, opts...); err != nil {
 			return fmt.Errorf("fx.Decorate(%v) from:\n%+vFailed: %v", decorator, d.Stack, err)
 		}
 	}

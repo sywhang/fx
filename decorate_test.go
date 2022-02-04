@@ -55,4 +55,23 @@ func DecorateSuccess(t *testing.T) {
 		)
 		defer app.RequireStart().RequireStop()
 	})
+
+	t.Run("decorate something from root", func(t *testing.T) {
+		redis := fx.Module("redis",
+			fx.Decorate(func() *Logger {
+				return &Logger{Name: "redis"}
+			}),
+			fx.Invoke(func(l *Logger) {
+				assert.Equal(t, "redis", l.Name)
+			}),
+		)
+		app := fxtest.New(t,
+			redis,
+			fx.Provide(func() *Logger {
+				assert.Fail(t, "should not run this")
+				return &Logger{Name: "root"}
+			}),
+		)
+		defer app.RequireStart().RequireStop()
+	})
 }
