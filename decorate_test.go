@@ -93,7 +93,7 @@ func TestDecorateSuccess(t *testing.T) {
 			redis,
 			logger,
 			fx.Decorate(func(l *Logger) *Logger {
-				return &Logger{Name: "decorated" + l.Name}
+				return &Logger{Name: "decorated " + l.Name}
 			}),
 		)
 		defer app.RequireStart().RequireStop()

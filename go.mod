@@ -12,4 +12,4 @@ require (
 	golang.org/x/sys v0.0.0-20210903071746-97244b99971b
 )
 
-replace go.uber.org/dig => github.com/uber-go/dig v1.13.1-0.20220127174725-1d9f0f1e9c0a
+replace go.uber.org/dig => github.com/sywhang/dig v1.12.1-0.20220206223928-27af7c8a082c
