@@ -78,7 +78,7 @@ func TestDecorateSuccess(t *testing.T) {
 		defer app.RequireStart().RequireStop()
 	})
 
-	t.Run("use a decorator in root", func(t *testing.T) {
+	t.Run("use Decorate in root", func(t *testing.T) {
 		redis := fx.Module("redis",
 			fx.Invoke(func(l *Logger) {
 				assert.Equal(t, "decorated logger", l.Name)
@@ -95,6 +95,90 @@ func TestDecorateSuccess(t *testing.T) {
 			fx.Decorate(func(l *Logger) *Logger {
 				return &Logger{Name: "decorated " + l.Name}
 			}),
+		)
+		defer app.RequireStart().RequireStop()
+	})
+
+	t.Run("use Decorate with Annotate", func(t *testing.T) {
+		type Coffee struct {
+			Name  string
+			Price int
+		}
+
+		cafe := fx.Module("cafe",
+			fx.Provide(fx.Annotate(func() *Coffee {
+				return &Coffee{Name: "Americano", Price: 3}
+			}, fx.ResultTags(`group:"coffee"`))),
+			fx.Provide(fx.Annotate(func() *Coffee {
+				return &Coffee{Name: "Cappucino", Price: 4}
+			}, fx.ResultTags(`group:"coffee"`))),
+			fx.Provide(fx.Annotate(func() *Coffee {
+				return &Coffee{Name: "Cold Brew", Price: 4}
+			}, fx.ResultTags(`group:"coffee"`))),
+		)
+
+		takeout := fx.Module("takeout",
+			cafe,
+			fx.Decorate(fx.Annotate(func(coffee []*Coffee) []*Coffee {
+				var newC []*Coffee
+				for _, c := range coffee {
+					newC = append(newC, &Coffee{
+						Name:  c.Name,
+						Price: c.Price + 1,
+					})
+				}
+				return newC
+			}, fx.ParamTags(`group:"coffee"`), fx.ResultTags(`group:"coffee"`))),
+			fx.Invoke(fx.Annotate(func(coffee []*Coffee) {
+				assert.Equal(t, 3, len(coffee))
+				totalPrice := 0
+				for _, c := range coffee {
+					totalPrice += c.Price
+				}
+				assert.Equal(t, 4+5+5, totalPrice)
+			}, fx.ParamTags(`group:"coffee"`))),
+		)
+
+		app := fxtest.New(t,
+			takeout,
+		)
+		defer app.RequireStart().RequireStop()
+	})
+
+	t.Run("use Decorate with parameter/result struct", func(t *testing.T) {
+		type Logger struct {
+			Name string
+		}
+		type A struct {
+			fx.In
+
+			Log     *Logger
+			Version int `name:"versionNum"`
+		}
+		type B struct {
+			fx.Out
+
+			Log     *Logger
+			Version int `name:"versionNum"`
+		}
+		app := fxtest.New(t,
+			fx.Provide(
+				fx.Annotate(func() int { return 1 },
+					fx.ResultTags(`name:"versionNum"`)),
+				func() *Logger {
+					return &Logger{Name: "logger"}
+				},
+			),
+			fx.Decorate(func(a A) B {
+				return B{
+					Log:     &Logger{Name: a.Log.Name + " decorated"},
+					Version: a.Version + 1,
+				}
+			}),
+			fx.Invoke(fx.Annotate(func(l *Logger, ver int) {
+				assert.Equal(t, "logger decorated", l.Name)
+				assert.Equal(t, 2, ver)
+			}, fx.ParamTags(``, `name:"versionNum"`))),
 		)
 		defer app.RequireStart().RequireStop()
 	})
