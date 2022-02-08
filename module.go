@@ -38,9 +38,7 @@ type container interface {
 	Provide(interface{}, ...dig.ProvideOption) error
 }
 
-// Module is a named group of zero or more fx.Options. A Module is a
-// dependency graph with limited scope, and can be used for scoping
-// graph modifications (not implemented yet).
+// Module is a named group of zero or more fx.Options.
 func Module(name string, opts ...Option) Option {
 	mo := moduleOption{
 		name:    name,
@@ -94,13 +92,15 @@ type module struct {
 func (m *module) build(app *App, root *dig.Container) {
 	if m.parent == nil {
 		m.scope = root.Scope(m.name)
+		// TODO: Once fx.Decorate is in-place,
+		// use the root container instead of subscope.
 	} else {
 		parentScope := m.parent.scope
 		m.scope = parentScope.Scope(m.name)
 	}
 
-	for i := 0; i < len(m.modules); i++ {
-		m.modules[i].build(app, root)
+	for _, mod := range m.modules {
+		mod.build(app, root)
 	}
 }
 
