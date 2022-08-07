@@ -735,6 +735,72 @@ func TestOptions(t *testing.T) {
 		assert.Equal(t, 2, count)
 	})
 
+	t.Run("PrivateProvides", func(t *testing.T) {
+		t.Parallel()
+		app := fxtest.New(t,
+			Module("module",
+				Provide(func() string {
+					return "Goodbye"
+				}, Private(true)),
+				Invoke(func(s string) {
+					assert.Equal(t, "Goodbye", s)
+				}),
+			),
+			Provide(func() string {
+				return "Hello"
+			}),
+			Invoke(func(s string) {
+				assert.Equal(t, "Hello", s)
+			}),
+		)
+		assert.Nil(t, app.Err())
+		defer app.RequireStart().RequireStop()
+	})
+
+	t.Run("PrivateProvideInvisibleToParent", func(t *testing.T) {
+		t.Parallel()
+		app := NewForTest(t,
+			Module("module",
+				Provide(func() int {
+					return 1
+				}, Private(true)),
+				Invoke(func(i int) {
+					assert.Equal(t, 1, i)
+				}),
+			),
+			Invoke(func(i int) {
+				assert.Equal(t, 1, i)
+			}),
+		)
+		err := app.Err()
+		require.Error(t, err, "expected invoke failure")
+		assert.Contains(t, err.Error(), "missing dependencies")
+		assert.Contains(t, err.Error(), "missing type: int")
+	})
+
+	t.Run("PrivateProvideWithDecorate", func(t *testing.T) {
+		t.Parallel()
+		app := fxtest.New(t,
+			Module("module",
+				Provide(func() int {
+					return 10
+				}, Private(true)),
+				Decorate(func(i int) int {
+					return i + 1
+				}),
+				Invoke(func(i int) {
+					assert.Equal(t, 11, i)
+				}),
+			),
+			Provide(func() int {
+				assert.Fail(t, "shouldn't invoke parent's constructor")
+				return 1
+			}),
+		)
+		require.NoError(t, app.Err())
+		defer app.RequireStart().RequireStop()
+	})
+
 	t.Run("Error", func(t *testing.T) {
 		t.Parallel()
 
