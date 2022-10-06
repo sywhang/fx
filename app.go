@@ -35,6 +35,7 @@ import (
 
 	"go.uber.org/dig"
 	"go.uber.org/fx/fxevent"
+	"go.uber.org/fx/fxlifecycle"
 	"go.uber.org/fx/internal/fxclock"
 	"go.uber.org/fx/internal/fxlog"
 	"go.uber.org/fx/internal/fxreflect"
@@ -243,6 +244,29 @@ func (l loggerOption) String() string {
 // failures difficult to debug, since no errors are printed to console.
 var NopLogger = WithLogger(func() fxevent.Logger { return fxevent.NopLogger })
 
+type starterOption struct {
+	starter fxlifecycle.Starter
+}
+
+func (s starterOption) apply(m *module) {
+	if m.parent != nil {
+		m.app.err = fmt.Errorf("fx.WithStarter Option should be passed to top-level App, " +
+			"not to fx.Module")
+		return
+	}
+	m.app.starter = s.starter
+}
+
+func (s starterOption) String() string {
+	return fmt.Sprintf("fx.StarterOption(%s)", fxreflect.FuncName(s.starter))
+}
+
+func WithStarter(starter fxlifecycle.Starter) Option {
+	return starterOption{
+		starter: starter,
+	}
+}
+
 // An App is a modular application built around dependency injection. Most
 // users will only need to use the New constructor and the all-in-one Run
 // convenience method. In more unusual cases, users may need to use the Err,
@@ -289,6 +313,8 @@ type App struct {
 	// Used to setup logging within fx.
 	log            fxevent.Logger
 	logConstructor *provide // set only if fx.WithLogger was used
+	// Lifecycle runners
+	starter fxlifecycle.Starter
 	// Timeouts used
 	startTimeout time.Duration
 	stopTimeout  time.Duration
@@ -417,6 +443,14 @@ func (app *App) constructCustomLogger(buffer *logBuffer) (err error) {
 	})
 }
 
+type defaultStarter struct {
+}
+
+func (s defaultStarter) Start(runStart func(context.Context) error) error {
+	// TODO
+	return nil
+}
+
 // New creates and initializes an App, immediately executing any functions
 // registered via Invoke options. See the documentation of the App struct for
 // details on the application's initialization, startup, and shutdown logic.
@@ -441,6 +475,7 @@ func New(opts ...Option) *App {
 		startTimeout: DefaultTimeout,
 		stopTimeout:  DefaultTimeout,
 	}
+	app.starter = app // app itself implements the Starter interface by default.
 	app.root = &module{app: app}
 	app.modules = append(app.modules, app.root)
 
@@ -607,7 +642,7 @@ func (app *App) run(done <-chan os.Signal) (exitCode int) {
 	startCtx, cancel := app.clock.WithTimeout(context.Background(), app.StartTimeout())
 	defer cancel()
 
-	if err := app.Start(startCtx); err != nil {
+	if err := app.starter.Start(startCtx); err != nil {
 		return 1
 	}
 
