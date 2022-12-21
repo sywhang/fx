@@ -350,6 +350,20 @@ func (ehl errorHandlerList) HandleError(err error) {
 	}
 }
 
+func RecoverOnPanic() Option {
+	return recoverOnPanicOption{}
+}
+
+type recoverOnPanicOption struct{}
+
+func (rop recoverOnPanicOption) apply(m *module) {
+	m.recoverOnPanic = true
+}
+
+func (rop recoverOnPanicOption) String() string {
+	return "fx.RecoverOnPanic()"
+}
+
 // validate sets *App into validation mode without running invoked functions.
 func validate(validate bool) Option {
 	return &validateOption{
@@ -430,10 +444,16 @@ func New(opts ...Option) *App {
 		lifecycle.New(appLogger{app}, app.clock),
 	}
 
-	app.container = dig.New(
+	digOpts := []dig.Option{
 		dig.DeferAcyclicVerification(),
 		dig.DryRun(app.validate),
-	)
+	}
+
+	if app.root.recoverOnPanic {
+		digOpts = append(digOpts, dig.RecoverFromPanics())
+	}
+
+	app.container = dig.New(digOpts...)
 
 	for _, m := range app.modules {
 		m.build(app, app.container)

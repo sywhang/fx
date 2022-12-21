@@ -91,6 +91,7 @@ type module struct {
 	log            fxevent.Logger
 	fallbackLogger fxevent.Logger
 	logConstructor *provide
+	recoverOnPanic bool
 }
 
 // scope is a private wrapper interface for dig.Container and dig.Scope.
