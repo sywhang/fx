@@ -221,5 +221,5 @@ func TestPanicT(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
+	goleak.VerifyTestMain(m, goleak.IgnoreTopFunction("go.uber.org/fx.(*signalReceivers).relayer"))
 }

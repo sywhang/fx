@@ -676,10 +676,11 @@ func (app *App) withRollback(
 
 func (app *App) start(ctx context.Context) error {
 	return app.withRollback(ctx, func(ctx context.Context) error {
+		app.receivers.Start(ctx)
 		if err := app.lifecycle.Start(ctx); err != nil {
+			app.receivers.Stop(ctx)
 			return err
 		}
-		app.receivers.Start(ctx)
 		return nil
 	})
 }
